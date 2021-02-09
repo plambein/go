@@ -74,6 +74,11 @@ func (h Header) clone() Header {
 	return h2
 }
 
+// SetOrder sets the order of the header structure.
+func (h Header) SetOrder(order []string) {
+	h[textproto.MIMEHeaderOrderKey] = order
+}
+
 var timeFormats = []string{
 	TimeFormat,
 	time.RFC850,
@@ -108,21 +113,38 @@ func (w stringWriter) WriteString(s string) (n int, err error) {
 	return w.w.Write([]byte(s))
 }
 
-type keyValues struct {
-	key    string
-	values []string
+type KeyValues struct {
+	Key    string
+	Values []string
 }
 
-// A headerSorter implements sort.Interface by sorting a []keyValues
-// by key. It's used as a pointer, so it can fit in a sort.Interface
-// interface value without allocation.
+// A headerSorter implements sort.Interface by sorting a []KeyValues
+// by the given order, if not nil, or by Key otherwise.
+// It's used as a pointer, so it can fit in a sort.Interface
 type headerSorter struct {
-	kvs []keyValues
+	kvs   []KeyValues
+	order map[string]int
 }
 
 func (s *headerSorter) Len() int           { return len(s.kvs) }
 func (s *headerSorter) Swap(i, j int)      { s.kvs[i], s.kvs[j] = s.kvs[j], s.kvs[i] }
-func (s *headerSorter) Less(i, j int) bool { return s.kvs[i].key < s.kvs[j].key }
+func (s *headerSorter) Less(i, j int) bool {
+	// If the order isn't defined, sort lexicographically.
+	if s.order == nil {
+		return s.kvs[i].Key < s.kvs[j].Key
+	}
+	iID, iok := s.order[strings.ToLower(s.kvs[i].Key)]
+	jID, jok := s.order[strings.ToLower(s.kvs[j].Key)]
+	if !iok && !jok {
+		return s.kvs[i].Key < s.kvs[j].Key
+	} else if !iok && jok {
+		return false
+	} else if iok && !jok {
+		return true
+	}
+	return iID < jID
+}
+
 
 var headerSorterPool = sync.Pool{
 	New: func() interface{} { return new(headerSorter) },
@@ -131,21 +153,39 @@ var headerSorterPool = sync.Pool{
 // sortedKeyValues returns h's keys sorted in the returned kvs
 // slice. The headerSorter used to sort is also returned, for possible
 // return to headerSorterCache.
-func (h Header) sortedKeyValues(exclude map[string]bool) (kvs []keyValues, hs *headerSorter) {
+func (h Header) sortedKeyValues(exclude map[string]bool) (kvs []KeyValues, hs *headerSorter) {
 	hs = headerSorterPool.Get().(*headerSorter)
 	if cap(hs.kvs) < len(h) {
-		hs.kvs = make([]keyValues, 0, len(h))
+		hs.kvs = make([]KeyValues, 0, len(h))
 	}
 	kvs = hs.kvs[:0]
 	for k, vv := range h {
 		if !exclude[k] {
-			kvs = append(kvs, keyValues{k, vv})
+			kvs = append(kvs, KeyValues{k, vv})
 		}
 	}
 	hs.kvs = kvs
 	sort.Sort(hs)
 	return kvs, hs
 }
+
+func (h Header) sortedKeyValuesBy(order map[string]int, exclude map[string]bool) (kvs []KeyValues, hs *headerSorter) {
+	hs = headerSorterPool.Get().(*headerSorter)
+	if cap(hs.kvs) < len(h) {
+		hs.kvs = make([]KeyValues, 0, len(h))
+	}
+	kvs = hs.kvs[:0]
+	for k, vv := range h {
+		if !exclude[k] {
+			kvs = append(kvs, KeyValues{k, vv})
+		}
+	}
+	hs.kvs = kvs
+	hs.order = order
+	sort.Sort(hs)
+	return kvs, hs
+}
+
 
 // WriteSubset writes a header in wire format.
 // If exclude is not nil, keys where exclude[key] == true are not written.
@@ -158,30 +198,61 @@ func (h Header) writeSubset(w io.Writer, exclude map[string]bool, trace *httptra
 	if !ok {
 		ws = stringWriter{w}
 	}
-	kvs, sorter := h.sortedKeyValues(exclude)
-	var formattedVals []string
+	var kvs []KeyValues
+	var sorter *headerSorter
+	// Check if the header order is defined.
+	if headerOrder, ok := h[textproto.MIMEHeaderOrderKey]; ok {
+		order := make(map[string]int)
+		for i, v := range headerOrder {
+			order[strings.ToLower(v)] = i
+		}
+		if exclude == nil {
+			exclude = map[string]bool{
+				textproto.MIMEHeaderOrderKey: true,
+			}
+		}
+		kvs, sorter = h.sortedKeyValuesBy(order, exclude)
+	} else {
+		kvs, sorter = h.sortedKeyValues(exclude)
+	}
+
 	for _, kv := range kvs {
-		for _, v := range kv.values {
+		for _, v := range kv.Values {
 			v = headerNewlineToSpace.Replace(v)
 			v = textproto.TrimString(v)
-			for _, s := range []string{kv.key, ": ", v, "\r\n"} {
+			for _, s := range []string{kv.Key, ": ", v, "\r\n"} {
 				if _, err := ws.WriteString(s); err != nil {
 					headerSorterPool.Put(sorter)
 					return err
 				}
 			}
-			if trace != nil && trace.WroteHeaderField != nil {
-				formattedVals = append(formattedVals, v)
-			}
-		}
-		if trace != nil && trace.WroteHeaderField != nil {
-			trace.WroteHeaderField(kv.key, formattedVals)
-			formattedVals = nil
 		}
 	}
 	headerSorterPool.Put(sorter)
 	return nil
 }
+
+// ToSortedKeyValues converts an object of type Header to a sorted key-values slice.
+func (h Header) ToSortedKeyValues(exclude map[string]bool) []KeyValues {
+	var kvs []KeyValues
+	// Check if the header order is defined.
+	if headerOrder, ok := h[textproto.MIMEHeaderOrderKey]; ok {
+		order := make(map[string]int)
+		for i, v := range headerOrder {
+			order[strings.ToLower(v)] = i
+		}
+		if exclude == nil {
+			exclude = make(map[string]bool)
+		}
+		// Make sure this header is always excluded
+		exclude[textproto.MIMEHeaderOrderKey] = true
+		kvs, _ = h.sortedKeyValuesBy(order, exclude)
+	} else {
+		kvs, _ = h.sortedKeyValues(exclude)
+	}
+	return kvs
+}
+
 
 // CanonicalHeaderKey returns the canonical format of the
 // header key s. The canonicalization converts the first

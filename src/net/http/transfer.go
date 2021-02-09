@@ -281,6 +281,42 @@ func (t *transferWriter) shouldSendContentLength() bool {
 	return false
 }
 
+// GetHeader returns the headers as they would be written by WriteHeader.
+func (t *transferWriter) GetHeader() Header {
+	var h = Header(make(map[string][]string))
+	if t.Close && !hasToken(t.Header.get("Connection"), "close") {
+		h.Set("Connection", "close")
+	}
+	// Write Content-Length and/or Transfer-Encoding whose values are a
+	// function of the sanitized field triple (Body, ContentLength,
+	// TransferEncoding)
+	if t.shouldSendContentLength() {
+		h.Set("Content-Length", strconv.FormatInt(t.ContentLength, 10))
+	} else if chunked(t.TransferEncoding) {
+		h.Set("Transfer-Encoding", "chunked")
+	}
+	// Write Trailer header
+	if t.Trailer != nil {
+		keys := make([]string, 0, len(t.Trailer))
+		for k := range t.Trailer {
+			k = CanonicalHeaderKey(k)
+			switch k {
+			case "Transfer-Encoding", "Trailer", "Content-Length":
+				return h
+			}
+			keys = append(keys, k)
+		}
+		if len(keys) > 0 {
+			sort.Strings(keys)
+			// TODO: could do better allocation-wise here, but trailers are rare,
+			// so being lazy for now.
+			h.Set("Trailer", strings.Join(keys, ","))
+		}
+	}
+	return h
+}
+
+
 func (t *transferWriter) writeHeader(w io.Writer, trace *httptrace.ClientTrace) error {
 	if t.Close && !hasToken(t.Header.get("Connection"), "close") {
 		if _, err := io.WriteString(w, "Connection: close\r\n"); err != nil {

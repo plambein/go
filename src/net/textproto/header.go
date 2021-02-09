@@ -4,6 +4,12 @@
 
 package textproto
 
+// MIMEHeaderOrderKey stores an order of the headers.
+// There is no guarantee that this header has been set.
+// The key holds an invalid header key character: ":"
+// so it should never be written.
+const MIMEHeaderOrderKey = "MIME-Header-Order:"
+
 // A MIMEHeader represents a MIME-style header mapping
 // keys to sets of values.
 type MIMEHeader map[string][]string

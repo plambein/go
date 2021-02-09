@@ -399,7 +399,7 @@ func (t *Transport) roundTrip(req *Request) (*Response, error) {
 	isHTTP := scheme == "http" || scheme == "https"
 	if isHTTP {
 		for k, vv := range req.Header {
-			if !httpguts.ValidHeaderFieldName(k) {
+			if !httpguts.ValidHeaderFieldName(k) && k != textproto.MIMEHeaderOrderKey {
 				return nil, fmt.Errorf("net/http: invalid header field name %q", k)
 			}
 			for _, v := range vv {

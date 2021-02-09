@@ -990,7 +990,7 @@ func (c *conn) readRequest(ctx context.Context) (w *response, err error) {
 		return nil, badRequestError("malformed Host header")
 	}
 	for k, vv := range req.Header {
-		if !httpguts.ValidHeaderFieldName(k) {
+		if !httpguts.ValidHeaderFieldName(k) && k != textproto.MIMEHeaderOrderKey {
 			return nil, badRequestError("invalid header name")
 		}
 		for _, v := range vv {
@@ -1198,7 +1198,9 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	if !owned {
 		header = w.handlerHeader
 	}
-	var excludeHeader map[string]bool
+	var excludeHeader = map[string]bool{
+		textproto.MIMEHeaderOrderKey: true,
+	}
 	delHeader := func(key string) {
 		if owned {
 			header.Del(key)
